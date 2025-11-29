@@ -38,116 +38,161 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
   const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    if (user) {
-      const token = localStorage.getItem('campusbuddy_token');
-      if (!token) return;
-
-      // Initialize socket connection
-      const newSocket = io(import.meta.env.VITE_API_URL || 'http://localhost:5000', {
-        auth: {
-          token,
-        },
-        transports: ['websocket'],
-      });
-
-      // Connection event handlers
-      newSocket.on('connect', () => {
-        console.log('Connected to server');
-        setIsConnected(true);
-      });
-
-      newSocket.on('disconnect', () => {
-        console.log('Disconnected from server');
-        setIsConnected(false);
-      });
-
-      newSocket.on('connect_error', (error) => {
-        console.error('Socket connection error:', error);
-        setIsConnected(false);
-      });
-
-      // User presence handlers
-      newSocket.on('user:online', (data: { userId: string }) => {
-        setOnlineUsers(prev => new Set(prev).add(data.userId));
-      });
-
-      newSocket.on('user:offline', (data: { userId: string }) => {
-        setOnlineUsers(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(data.userId);
-          return newSet;
-        });
-      });
-
-      // Typing indicators
-      newSocket.on('user:typing', (data: { userId: string; isTyping: boolean }) => {
-        setTypingUsers(prev => {
-          const newSet = new Set(prev);
-          if (data.isTyping) {
-            newSet.add(data.userId);
-          } else {
-            newSet.delete(data.userId);
+    // Only connect if user exists and has an ID (fully synced)
+    if (user && user.id) {
+      // Get fresh token from Firebase Auth
+      const initializeSocket = async () => {
+        try {
+          const { getIdToken } = await import('firebase/auth');
+          const { auth } = await import('../config/firebase');
+          
+          if (!auth.currentUser) {
+            console.warn('⚠️ No current user, cannot connect socket');
+            return;
           }
-          return newSet;
-        });
 
-        // Clear typing indicator after 3 seconds
-        if (data.isTyping) {
-          setTimeout(() => {
-            setTypingUsers(prev => {
+          console.log('🔐 Getting fresh Firebase ID token...');
+          // Get fresh Firebase ID token
+          const token = await getIdToken(auth.currentUser, true);
+          
+          if (!token) {
+            console.error('❌ Failed to get Firebase ID token');
+            return;
+          }
+          
+          console.log('✅ Got Firebase ID token, length:', token.length);
+          localStorage.setItem('campusbuddy_token', token);
+
+          const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+          console.log('🔌 Connecting to socket server:', apiUrl);
+
+          // Small delay to ensure server is ready
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // Initialize socket connection with fallback to polling
+          const newSocket = io(apiUrl, {
+            auth: {
+              token,
+            },
+            transports: ['websocket', 'polling'], // Fallback to polling if websocket fails
+            reconnection: true,
+            reconnectionDelay: 2000, // Increased delay
+            reconnectionAttempts: 10,
+            timeout: 20000,
+            forceNew: false,
+            upgrade: true, // Allow transport upgrades
+          });
+
+          // Connection event handlers
+          newSocket.on('connect', () => {
+            console.log('✅ Socket connected to server');
+            setIsConnected(true);
+          });
+
+          newSocket.on('disconnect', () => {
+            console.log('❌ Socket disconnected from server');
+            setIsConnected(false);
+          });
+
+          newSocket.on('connect_error', (error) => {
+            console.error('❌ Socket connection error:', error);
+            console.error('Error details:', {
+              message: error.message,
+              type: error.type,
+              description: error.description
+            });
+            setIsConnected(false);
+            // Don't show toast on every connection attempt (it will retry automatically)
+            // Only show error if it's a persistent failure
+            if (error.message.includes('Authentication') || error.message.includes('xhr poll error')) {
+              // These are more serious errors
+              console.warn('⚠️ Socket connection issue - will retry automatically');
+            }
+          });
+
+          // User presence handlers
+          newSocket.on('user:online', (data: { userId: string }) => {
+            setOnlineUsers(prev => new Set(prev).add(data.userId));
+          });
+
+          newSocket.on('user:offline', (data: { userId: string }) => {
+            setOnlineUsers(prev => {
               const newSet = new Set(prev);
               newSet.delete(data.userId);
               return newSet;
             });
-          }, 3000);
+          });
+
+          // Typing indicators
+          newSocket.on('user:typing', (data: { userId: string; isTyping: boolean }) => {
+            setTypingUsers(prev => {
+              const newSet = new Set(prev);
+              if (data.isTyping) {
+                newSet.add(data.userId);
+              } else {
+                newSet.delete(data.userId);
+              }
+              return newSet;
+            });
+
+            // Clear typing indicator after 3 seconds
+            if (data.isTyping) {
+              setTimeout(() => {
+                setTypingUsers(prev => {
+                  const newSet = new Set(prev);
+                  newSet.delete(data.userId);
+                  return newSet;
+                });
+              }, 3000);
+            }
+          });
+
+          // Message handlers
+          newSocket.on('message:receive', (message: Message) => {
+            window.dispatchEvent(new CustomEvent('newMessage', { detail: message }));
+          });
+
+          newSocket.on('message:delete', (data: { messageId: string }) => {
+            window.dispatchEvent(new CustomEvent('messageDeleted', { detail: data }));
+          });
+
+          // Announcement handlers
+          newSocket.on('announcement:new', (announcement: Announcement) => {
+            toast.success(`New announcement: ${announcement.title}`);
+            window.dispatchEvent(new CustomEvent('newAnnouncement', { detail: announcement }));
+          });
+
+          // Status update handlers
+          newSocket.on('status:update', (status: CampusStatus) => {
+            toast.info(`Campus status updated: ${status.facility}`);
+            window.dispatchEvent(new CustomEvent('statusUpdate', { detail: status }));
+          });
+
+          // Notification handlers
+          newSocket.on('notification', (notification: any) => {
+            toast(notification.message, {
+              icon: notification.icon || '📢',
+              duration: 5000,
+            });
+          });
+
+          // Error handlers
+          newSocket.on('error', (error: { message: string }) => {
+            toast.error(error.message);
+          });
+
+          setSocket(newSocket);
+        } catch (error) {
+          console.error('❌ Failed to initialize socket:', error);
+          setIsConnected(false);
         }
-      });
+      };
 
-      // Message handlers
-      newSocket.on('message:receive', (message: Message) => {
-        // This will be handled by the chat page component
-        // We can dispatch custom events or use a global state manager
-        window.dispatchEvent(new CustomEvent('newMessage', { detail: message }));
-      });
-
-      newSocket.on('message:delete', (data: { messageId: string }) => {
-        window.dispatchEvent(new CustomEvent('messageDeleted', { detail: data }));
-      });
-
-      // Announcement handlers
-      newSocket.on('announcement:new', (announcement: Announcement) => {
-        toast.success(`New announcement: ${announcement.title}`);
-        window.dispatchEvent(new CustomEvent('newAnnouncement', { detail: announcement }));
-      });
-
-      // Status update handlers
-      newSocket.on('status:update', (status: CampusStatus) => {
-        toast.info(`Campus status updated: ${status.facility}`);
-        window.dispatchEvent(new CustomEvent('statusUpdate', { detail: status }));
-      });
-
-      // Notification handlers
-      newSocket.on('notification', (notification: any) => {
-        toast(notification.message, {
-          icon: notification.icon || '📢',
-          duration: 5000,
-        });
-      });
-
-      // Error handlers
-      newSocket.on('error', (error: { message: string }) => {
-        toast.error(error.message);
-      });
-
-      setSocket(newSocket);
+      initializeSocket();
 
       // Cleanup on unmount
       return () => {
-        newSocket.close();
-        setSocket(null);
-        setIsConnected(false);
-        setOnlineUsers(new Set());
-        setTypingUsers(new Set());
+        // Cleanup will be handled when user changes or component unmounts
       };
     } else {
       // User logged out, disconnect socket

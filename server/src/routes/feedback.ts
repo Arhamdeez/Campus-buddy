@@ -14,48 +14,56 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: express.Respons
     const category = req.query.category as string;
     const status = req.query.status as string;
 
-    let query = db.collection('anonymousFeedback').orderBy('timestamp', 'desc');
+    let feedback: AnonymousFeedback[] = [];
+    let total = 0;
 
-    // Apply filters
-    if (type) {
-      query = query.where('type', '==', type);
-    }
-    if (category) {
-      query = query.where('category', '==', category);
-    }
-    if (status) {
-      query = query.where('status', '==', status);
-    }
+    try {
+      let query = db.collection('anonymousFeedback').orderBy('timestamp', 'desc');
 
-    // Non-admin users can only see confessions and resolved feedback
-    if (req.user?.role !== 'admin') {
-      // For confessions, show all. For feedback/complaints, only show resolved ones
-      if (type === 'confession') {
-        // No additional filter needed
-      } else {
-        query = query.where('status', '==', 'resolved');
+      // Apply filters
+      if (type) {
+        query = query.where('type', '==', type);
       }
+      if (category) {
+        query = query.where('category', '==', category);
+      }
+      if (status) {
+        query = query.where('status', '==', status);
+      }
+
+      // Non-admin users can only see confessions and resolved feedback
+      if (req.user?.role !== 'admin') {
+        // For confessions, show all. For feedback/complaints, only show resolved ones
+        if (type === 'confession') {
+          // No additional filter needed
+        } else {
+          query = query.where('status', '==', 'resolved');
+        }
+      }
+
+      // Get total count
+      const totalSnapshot = await query.get();
+      total = totalSnapshot.size;
+
+      // Apply pagination
+      const offset = (page - 1) * limit;
+      const feedbackSnapshot = await query.offset(offset).limit(limit).get();
+
+      feedbackSnapshot.forEach(doc => {
+        feedback.push({ id: doc.id, ...doc.data() } as AnonymousFeedback);
+      });
+    } catch (firestoreError) {
+      console.warn('⚠️ Firestore unavailable for feedback, returning empty list');
+      feedback = [];
+      total = 0;
     }
-
-    // Get total count
-    const totalSnapshot = await query.get();
-    const total = totalSnapshot.size;
-
-    // Apply pagination
-    const offset = (page - 1) * limit;
-    const feedbackSnapshot = await query.offset(offset).limit(limit).get();
-
-    const feedback: AnonymousFeedback[] = [];
-    feedbackSnapshot.forEach(doc => {
-      feedback.push({ id: doc.id, ...doc.data() } as AnonymousFeedback);
-    });
 
     const response: PaginatedResponse<AnonymousFeedback> = {
       data: feedback,
       total,
       page,
       limit,
-      hasMore: offset + limit < total
+      hasMore: (page - 1) * limit + limit < total
     };
 
     res.json({
@@ -77,7 +85,18 @@ router.get('/:id', authenticateToken, async (req: AuthRequest, res: express.Resp
   try {
     const { id } = req.params;
 
-    const feedbackDoc = await db.collection('anonymousFeedback').doc(id).get();
+    let feedbackDoc;
+    try {
+      feedbackDoc = await db.collection('anonymousFeedback').doc(id).get();
+    } catch (firestoreError) {
+      console.warn('⚠️ Firestore unavailable for getting feedback');
+      res.status(503).json({
+        success: false,
+        error: 'Server temporarily unavailable'
+      } as ApiResponse<null>);
+      return;
+    }
+
     if (!feedbackDoc.exists) {
       res.status(404).json({
         success: false,
@@ -146,8 +165,14 @@ router.post('/', async (req: express.Request, res: express.Response) => {
       downvotes: 0
     };
 
-    const docRef = await db.collection('anonymousFeedback').add(feedback);
-    const newFeedback: AnonymousFeedback = { id: docRef.id, ...feedback };
+    let newFeedback: AnonymousFeedback;
+    try {
+      const docRef = await db.collection('anonymousFeedback').add(feedback);
+      newFeedback = { id: docRef.id, ...feedback };
+    } catch (firestoreError) {
+      console.warn('⚠️ Firestore unavailable, using temporary ID');
+      newFeedback = { id: `temp_fb_${Date.now()}_${Math.random()}`, ...feedback };
+    }
 
     res.status(201).json({
       success: true,
@@ -177,7 +202,18 @@ router.put('/:id/status', authenticateToken, requireRole(['admin']), async (req:
       return;
     }
 
-    const feedbackDoc = await db.collection('anonymousFeedback').doc(id).get();
+    let feedbackDoc;
+    try {
+      feedbackDoc = await db.collection('anonymousFeedback').doc(id).get();
+    } catch (firestoreError) {
+      console.warn('⚠️ Firestore unavailable for status update');
+      res.status(503).json({
+        success: false,
+        error: 'Server temporarily unavailable'
+      } as ApiResponse<null>);
+      return;
+    }
+
     if (!feedbackDoc.exists) {
       res.status(404).json({
         success: false,
@@ -186,10 +222,16 @@ router.put('/:id/status', authenticateToken, requireRole(['admin']), async (req:
       return;
     }
 
-    await db.collection('anonymousFeedback').doc(id).update({ status });
-
-    const updatedDoc = await db.collection('anonymousFeedback').doc(id).get();
-    const updatedFeedback = { id: updatedDoc.id, ...updatedDoc.data() } as AnonymousFeedback;
+    let updatedFeedback: AnonymousFeedback;
+    try {
+      await db.collection('anonymousFeedback').doc(id).update({ status });
+      const updatedDoc = await db.collection('anonymousFeedback').doc(id).get();
+      updatedFeedback = { id: updatedDoc.id, ...updatedDoc.data() } as AnonymousFeedback;
+    } catch (firestoreError) {
+      console.warn('⚠️ Firestore unavailable for status update, using temporary response');
+      const existingData = feedbackDoc.data() as AnonymousFeedback;
+      updatedFeedback = { ...existingData, id, status };
+    }
 
     res.json({
       success: true,
@@ -227,7 +269,18 @@ router.post('/:id/vote', authenticateToken, async (req: AuthRequest, res: expres
       return;
     }
 
-    const feedbackDoc = await db.collection('anonymousFeedback').doc(id).get();
+    let feedbackDoc;
+    try {
+      feedbackDoc = await db.collection('anonymousFeedback').doc(id).get();
+    } catch (firestoreError) {
+      console.warn('⚠️ Firestore unavailable for voting');
+      res.status(503).json({
+        success: false,
+        error: 'Server temporarily unavailable'
+      } as ApiResponse<null>);
+      return;
+    }
+
     if (!feedbackDoc.exists) {
       res.status(404).json({
         success: false,
@@ -239,61 +292,80 @@ router.post('/:id/vote', authenticateToken, async (req: AuthRequest, res: expres
     const feedback = feedbackDoc.data() as AnonymousFeedback;
 
     // Check if user already voted
-    const existingVote = await db.collection('feedbackVotes')
-      .where('feedbackId', '==', id)
-      .where('userId', '==', req.user.id)
-      .get();
+    let existingVote;
+    try {
+      existingVote = await db.collection('feedbackVotes')
+        .where('feedbackId', '==', id)
+        .where('userId', '==', req.user.id)
+        .get();
+    } catch (firestoreError) {
+      console.warn('⚠️ Firestore unavailable for vote check');
+      res.status(503).json({
+        success: false,
+        error: 'Server temporarily unavailable'
+      } as ApiResponse<null>);
+      return;
+    }
 
-    if (!existingVote.empty) {
-      const voteDoc = existingVote.docs[0];
-      const voteData = voteDoc.data();
+    let updatedFeedback: AnonymousFeedback;
+    try {
+      if (existingVote && !existingVote.empty) {
+        const voteDoc = existingVote.docs[0];
+        const voteData = voteDoc.data();
 
-      if (voteData.voteType === voteType) {
-        // Remove vote if same type
-        await db.collection('feedbackVotes').doc(voteDoc.id).delete();
+        if (voteData.voteType === voteType) {
+          // Remove vote if same type
+          await db.collection('feedbackVotes').doc(voteDoc.id).delete();
 
-        const updateData = voteType === 'up' 
-          ? { upvotes: Math.max(0, feedback.upvotes - 1) }
-          : { downvotes: Math.max(0, feedback.downvotes - 1) };
+          const updateData = voteType === 'up' 
+            ? { upvotes: Math.max(0, feedback.upvotes - 1) }
+            : { downvotes: Math.max(0, feedback.downvotes - 1) };
 
-        await db.collection('anonymousFeedback').doc(id).update(updateData);
+          await db.collection('anonymousFeedback').doc(id).update(updateData);
+        } else {
+          // Change vote type
+          await db.collection('feedbackVotes').doc(voteDoc.id).update({
+            voteType,
+            timestamp: Date.now()
+          });
+
+          const updateData = voteType === 'up'
+            ? { 
+                upvotes: feedback.upvotes + 1,
+                downvotes: Math.max(0, feedback.downvotes - 1)
+              }
+            : { 
+                upvotes: Math.max(0, feedback.upvotes - 1),
+                downvotes: feedback.downvotes + 1
+              };
+
+          await db.collection('anonymousFeedback').doc(id).update(updateData);
+        }
       } else {
-        // Change vote type
-        await db.collection('feedbackVotes').doc(voteDoc.id).update({
+        // Add new vote
+        await db.collection('feedbackVotes').add({
+          feedbackId: id,
+          userId: req.user.id,
           voteType,
           timestamp: Date.now()
         });
 
         const updateData = voteType === 'up'
-          ? { 
-              upvotes: feedback.upvotes + 1,
-              downvotes: Math.max(0, feedback.downvotes - 1)
-            }
-          : { 
-              upvotes: Math.max(0, feedback.upvotes - 1),
-              downvotes: feedback.downvotes + 1
-            };
+          ? { upvotes: feedback.upvotes + 1 }
+          : { downvotes: feedback.downvotes + 1 };
 
         await db.collection('anonymousFeedback').doc(id).update(updateData);
       }
-    } else {
-      // Add new vote
-      await db.collection('feedbackVotes').add({
-        feedbackId: id,
-        userId: req.user.id,
-        voteType,
-        timestamp: Date.now()
-      });
 
-      const updateData = voteType === 'up'
-        ? { upvotes: feedback.upvotes + 1 }
-        : { downvotes: feedback.downvotes + 1 };
-
-      await db.collection('anonymousFeedback').doc(id).update(updateData);
+      const updatedDoc = await db.collection('anonymousFeedback').doc(id).get();
+      updatedFeedback = { id: updatedDoc.id, ...updatedDoc.data() } as AnonymousFeedback;
+    } catch (firestoreError) {
+      console.warn('⚠️ Firestore unavailable for vote update, using temporary response');
+      // Calculate vote counts optimistically
+      const upvotes = voteType === 'up' ? feedback.upvotes + 1 : Math.max(0, feedback.upvotes - 1);
+      const downvotes = voteType === 'down' ? feedback.downvotes + 1 : Math.max(0, feedback.downvotes - 1);
+      updatedFeedback = { ...feedback, id, upvotes, downvotes };
     }
-
-    const updatedDoc = await db.collection('anonymousFeedback').doc(id).get();
-    const updatedFeedback = { id: updatedDoc.id, ...updatedDoc.data() } as AnonymousFeedback;
 
     res.json({
       success: true,

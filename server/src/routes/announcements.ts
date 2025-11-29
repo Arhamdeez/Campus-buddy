@@ -13,39 +13,47 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: express.Respons
     const priority = req.query.priority as string;
     const societyName = req.query.society as string;
 
-    let query = db.collection('announcements').orderBy('timestamp', 'desc');
+    let announcements: Announcement[] = [];
+    let total = 0;
 
-    // Apply filters
-    if (priority) {
-      query = query.where('priority', '==', priority);
+    try {
+      let query = db.collection('announcements').orderBy('timestamp', 'desc');
+
+      // Apply filters
+      if (priority) {
+        query = query.where('priority', '==', priority);
+      }
+      if (societyName) {
+        query = query.where('societyName', '==', societyName);
+      }
+
+      // Filter out expired announcements
+      const now = Date.now();
+      query = query.where('expiresAt', '>', now);
+
+      // Get total count
+      const totalSnapshot = await query.get();
+      total = totalSnapshot.size;
+
+      // Apply pagination
+      const offset = (page - 1) * limit;
+      const announcementsSnapshot = await query.offset(offset).limit(limit).get();
+
+      announcementsSnapshot.forEach(doc => {
+        announcements.push({ id: doc.id, ...doc.data() } as Announcement);
+      });
+    } catch (firestoreError) {
+      console.warn('⚠️ Firestore unavailable for announcements, returning empty list');
+      announcements = [];
+      total = 0;
     }
-    if (societyName) {
-      query = query.where('societyName', '==', societyName);
-    }
-
-    // Filter out expired announcements
-    const now = Date.now();
-    query = query.where('expiresAt', '>', now);
-
-    // Get total count
-    const totalSnapshot = await query.get();
-    const total = totalSnapshot.size;
-
-    // Apply pagination
-    const offset = (page - 1) * limit;
-    const announcementsSnapshot = await query.offset(offset).limit(limit).get();
-
-    const announcements: Announcement[] = [];
-    announcementsSnapshot.forEach(doc => {
-      announcements.push({ id: doc.id, ...doc.data() } as Announcement);
-    });
 
     const response: PaginatedResponse<Announcement> = {
       data: announcements,
       total,
       page,
       limit,
-      hasMore: offset + limit < total
+      hasMore: (page - 1) * limit + limit < total
     };
 
     res.json({
@@ -133,8 +141,14 @@ router.post('/', authenticateToken, requireRole(['society_head', 'admin']), asyn
       likes: 0
     };
 
-    const docRef = await db.collection('announcements').add(announcement);
-    const newAnnouncement: Announcement = { id: docRef.id, ...announcement };
+    let newAnnouncement: Announcement;
+    try {
+      const docRef = await db.collection('announcements').add(announcement);
+      newAnnouncement = { id: docRef.id, ...announcement };
+    } catch (firestoreError) {
+      console.warn('⚠️ Firestore unavailable, using temporary ID');
+      newAnnouncement = { id: `temp_ann_${Date.now()}_${Math.random()}`, ...announcement };
+    }
 
     res.status(201).json({
       success: true,

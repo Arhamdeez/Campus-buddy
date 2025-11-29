@@ -1,7 +1,17 @@
-import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Only initialize Gemini if API key is provided
+let gemini: GoogleGenerativeAI | null = null;
 
-export default openai;
+if (process.env.GEMINI_API_KEY) {
+  try {
+    gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    console.log('✅ Gemini client initialized');
+  } catch (error) {
+    console.warn('⚠️ Failed to initialize Gemini client:', error);
+  }
+} else {
+  console.warn('⚠️ GEMINI_API_KEY not set - Chat summarization will be disabled');
+}
+
+export default gemini;

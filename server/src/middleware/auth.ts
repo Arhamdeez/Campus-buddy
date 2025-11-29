@@ -23,32 +23,54 @@ export const authenticateToken = async (
     // Verify Firebase ID token
     const decodedToken = await auth.verifyIdToken(token);
     
-    // Get user from Firebase Auth
-    const userRecord = await auth.getUser(decodedToken.uid);
-    
-    // Get user data from Firestore
-    const userDoc = await db.collection('users').doc(decodedToken.uid).get();
-    
-    if (!userDoc.exists) {
-      res.status(404).json({ success: false, error: 'User data not found' });
-      return;
+    // Try to get user data from Firestore, but don't fail if unavailable
+    let userData: User | null = null;
+    try {
+      const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+      if (userDoc.exists) {
+        userData = userDoc.data() as User;
+      }
+    } catch (firestoreError: any) {
+      console.warn('⚠️ Auth middleware: Firestore unavailable, using token claims');
     }
     
-    const userData = userDoc.data() as User;
+    // If Firestore data not available, create user from token claims
+    if (!userData) {
+      const email = decodedToken.email || '';
+      const name = decodedToken.name || email.split('@')[0] || 'User';
+      
+      userData = {
+        id: decodedToken.uid,
+        name: name,
+        email: email,
+        batch: '',
+        role: 'student',
+        joinedAt: Date.now(),
+        badges: [],
+        points: 0,
+        profilePicture: decodedToken.picture || undefined,
+      };
+      
+      console.log('✅ Auth middleware: Created user from token claims');
+    }
     
     // Attach user to request
     req.user = userData;
 
     next();
   } catch (error: any) {
-    console.error('Authentication error:', error);
+    console.error('❌ Authentication error:', error);
+    console.error('Error code:', error.code);
+    console.error('Error message:', error.message);
     
     if (error.code === 'auth/id-token-expired') {
       res.status(401).json({ success: false, error: 'Token expired' });
     } else if (error.code === 'auth/id-token-revoked') {
       res.status(401).json({ success: false, error: 'Token revoked' });
+    } else if (error.code === 'auth/argument-error') {
+      res.status(401).json({ success: false, error: 'Invalid token format' });
     } else {
-      res.status(403).json({ success: false, error: 'Invalid or expired token' });
+      res.status(403).json({ success: false, error: `Authentication failed: ${error.message || 'Unknown error'}` });
     }
   }
 };

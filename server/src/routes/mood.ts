@@ -2,7 +2,7 @@ import express from 'express';
 import { db } from '../config/database';
 import { AuthRequest, authenticateToken } from '../middleware/auth';
 import { MoodEntry, ApiResponse, PaginatedResponse } from '../../../shared/types';
-import openai from '../config/openai';
+// Note: Gemini API import removed - using curated study tips for demo
 
 const router = express.Router();
 
@@ -91,30 +91,9 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: express.Respon
       return;
     }
 
-    // Generate AI-powered study tip based on mood
-    let studyTip = '';
-    try {
-      const completion = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [
-          {
-            role: "system",
-            content: "You are a helpful study advisor for university students. Provide concise, practical study tips based on the student's current mood. Keep responses under 100 words and focus on actionable advice."
-          },
-          {
-            role: "user",
-            content: `I'm feeling ${mood} right now. What study tip would you recommend for someone in this mood?`
-          }
-        ],
-        max_tokens: 150,
-        temperature: 0.7
-      });
-
-      studyTip = completion.choices[0]?.message?.content || getDefaultStudyTip(mood);
-    } catch (aiError) {
-      console.error('OpenAI error:', aiError);
-      studyTip = getDefaultStudyTip(mood);
-    }
+    // Generate study tip based on mood (using placeholder tips for demo)
+    // In production, this would use Gemini API, but for demo purposes we use curated tips
+    const studyTip = getDefaultStudyTip(mood);
 
     const moodEntry: Omit<MoodEntry, 'id'> = {
       userId: req.user.id,

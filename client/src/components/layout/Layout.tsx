@@ -14,6 +14,7 @@ import {
   Bars3Icon,
   XMarkIcon,
   ArrowRightOnRectangleIcon,
+  HeartIcon,
 } from '@heroicons/react/24/outline';
 import {
   HomeIcon as HomeIconSolid,
@@ -24,6 +25,7 @@ import {
   FaceSmileIcon as FaceIconSolid,
   MapPinIcon as MapIconSolid,
   UserIcon as UserIconSolid,
+  HeartIcon as HeartIconSolid,
 } from '@heroicons/react/24/solid';
 
 interface LayoutProps {
@@ -66,6 +68,12 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       href: '/feedback',
       icon: ExclamationTriangleIcon,
       iconSolid: ExclamationIconSolid,
+    },
+    {
+      name: 'Confessions',
+      href: '/confessions',
+      icon: HeartIcon,
+      iconSolid: HeartIconSolid,
     },
     {
       name: 'Mood Tracker',

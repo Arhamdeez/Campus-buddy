@@ -3,7 +3,7 @@ import { auth } from '../config/firebase';
 import { getIdToken } from 'firebase/auth';
 
 // Create axios instances for different API endpoints
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
 // Helper function to get fresh Firebase ID token
 const getFreshToken = async (): Promise<string | null> => {
@@ -41,17 +41,20 @@ export const api = axios.create({
 // Add token to requests automatically
 api.interceptors.request.use(
   async (config) => {
-    // Try to get token from localStorage first
-    let token = localStorage.getItem('campusbuddy_token');
-    
-    // If no token or token might be expired, get a fresh one
-    if (!token || auth.currentUser) {
-      token = await getFreshToken();
+    try {
+      // Always get a fresh token to ensure it's valid
+      const token = await getFreshToken();
+      
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+        console.log('🔐 API request: Added token to headers');
+      } else {
+        console.warn('⚠️ API request: No token available');
+      }
+    } catch (error) {
+      console.error('❌ API request: Error getting token:', error);
     }
     
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
     return config;
   },
   (error) => {
@@ -65,24 +68,64 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
     
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      originalRequest._retry = true;
-      
-      try {
-        // Try to get a fresh token
-        const token = await getFreshToken();
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      if (!originalRequest._retry) {
+        originalRequest._retry = true;
         
-        if (token) {
-          // Retry the original request with new token
-          originalRequest.headers.Authorization = `Bearer ${token}`;
-          return api(originalRequest);
-        } else {
-          // No valid user, redirect to login
+        console.log('🔄 API response: Token expired/invalid, refreshing...');
+        
+        try {
+          // Try to get a fresh token
+          const token = await getFreshToken();
+          
+          if (token) {
+            // Retry the original request with new token
+            originalRequest.headers.Authorization = `Bearer ${token}`;
+            console.log('✅ API response: Retrying request with fresh token');
+            return api(originalRequest);
+          } else {
+            // Check if user is still authenticated in Firebase Auth
+            const { auth } = await import('../config/firebase');
+            if (auth.currentUser) {
+              // User is still authenticated, just token issue - don't redirect
+              console.warn('⚠️ API response: Token issue but user still authenticated, not redirecting');
+              return Promise.reject(error);
+            } else {
+              // No valid user, redirect to login
+              console.error('❌ API response: No valid user, redirecting to login');
+              localStorage.removeItem('campusbuddy_token');
+              window.location.href = '/login';
+            }
+          }
+        } catch (refreshError) {
+          // Check if user is still authenticated before redirecting
+          try {
+            const { auth } = await import('../config/firebase');
+            if (auth.currentUser) {
+              console.warn('⚠️ API response: Token refresh failed but user still authenticated, not redirecting');
+              return Promise.reject(error);
+            }
+          } catch (importError) {
+            // If we can't check auth, proceed with redirect
+          }
+          // Token refresh failed, redirect to login
+          console.error('❌ API response: Token refresh failed:', refreshError);
           localStorage.removeItem('campusbuddy_token');
           window.location.href = '/login';
         }
-      } catch (refreshError) {
-        // Token refresh failed, redirect to login
+      } else {
+        // Already retried, check if user is still authenticated
+        try {
+          const { auth } = await import('../config/firebase');
+          if (auth.currentUser) {
+            console.warn('⚠️ API response: Retry failed but user still authenticated, not redirecting');
+            return Promise.reject(error);
+          }
+        } catch (importError) {
+          // If we can't check auth, proceed with redirect
+        }
+        // Already retried, redirect to login
+        console.error('❌ API response: Retry failed, redirecting to login');
         localStorage.removeItem('campusbuddy_token');
         window.location.href = '/login';
       }

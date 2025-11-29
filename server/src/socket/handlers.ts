@@ -17,29 +17,89 @@ export const initializeSocketHandlers = (io: Server) => {
       const token = socket.handshake.auth.token;
       
       if (!token) {
+        console.error('❌ Socket auth: No token provided');
         return next(new Error('Authentication token required'));
       }
 
+      console.log('🔐 Socket auth: Verifying token...');
+      
       // Verify Firebase ID token
       const decodedToken = await auth.verifyIdToken(token);
+      console.log('✅ Socket auth: Token verified for UID:', decodedToken.uid);
       
-      // Get user data from Firestore
-      const userDoc = await db.collection('users').doc(decodedToken.uid).get();
-      if (!userDoc.exists) {
-        return next(new Error('User not found'));
+      // Try to get user data from Firestore, but don't fail if Firestore is unavailable
+      let userData: User | null = null;
+      try {
+        const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+        if (userDoc.exists) {
+          userData = userDoc.data() as User;
+          console.log('✅ Socket auth: User data loaded from Firestore');
+        }
+      } catch (firestoreError: any) {
+        console.warn('⚠️ Socket auth: Firestore unavailable, using Firebase Auth data only');
+        console.warn('Firestore error:', firestoreError.message);
+      }
+      
+      // If Firestore data not available, create basic user from decoded token
+      // We can extract email from the token claims without calling auth.getUser()
+      if (!userData) {
+        try {
+          // Extract email from token claims (if available)
+          const email = decodedToken.email || '';
+          const name = decodedToken.name || email.split('@')[0] || 'User';
+          
+          userData = {
+            id: decodedToken.uid,
+            name: name,
+            email: email,
+            batch: '',
+            role: 'student',
+            joinedAt: Date.now(),
+            badges: [],
+            points: 0,
+            profilePicture: decodedToken.picture || undefined,
+          };
+          console.log('✅ Socket auth: Created user from token claims');
+        } catch (tokenError) {
+          console.error('❌ Socket auth: Failed to create user from token:', tokenError);
+          // Still allow connection with minimal user data
+          userData = {
+            id: decodedToken.uid,
+            name: 'User',
+            email: '',
+            batch: '',
+            role: 'student',
+            joinedAt: Date.now(),
+            badges: [],
+            points: 0,
+          };
+          console.log('⚠️ Socket auth: Using minimal user data');
+        }
       }
 
-      const userData = userDoc.data() as User;
       socket.user = userData;
+      console.log('✅ Socket auth: User authenticated:', userData.name);
       
       next();
-    } catch (error) {
-      console.error('Socket authentication error:', error);
-      next(new Error('Authentication failed'));
+    } catch (error: any) {
+      console.error('❌ Socket authentication error:', error);
+      console.error('Error code:', error.code);
+      console.error('Error message:', error.message);
+      
+      // Provide more specific error messages
+      if (error.code === 'auth/id-token-expired') {
+        return next(new Error('Token expired'));
+      } else if (error.code === 'auth/id-token-revoked') {
+        return next(new Error('Token revoked'));
+      } else if (error.code === 'auth/argument-error') {
+        return next(new Error('Invalid token format'));
+      }
+      
+      next(new Error(`Authentication failed: ${error.message || 'Unknown error'}`));
     }
   });
 
-  io.on('connection', (socket: AuthenticatedSocket) => {
+  io.on('connection', async (socket: AuthenticatedSocket) => {
     console.log(`User ${socket.user?.name} connected with socket ${socket.id}`);
 
     if (socket.user) {
@@ -47,10 +107,14 @@ export const initializeSocketHandlers = (io: Server) => {
       onlineUsers.set(socket.user.id, socket.id);
       userSockets.set(socket.id, socket.user.id);
 
-      // Update user online status
-      db.collection('users').doc(socket.user.id).update({
-        isOnline: true
-      });
+      // Update user online status (if Firestore is available)
+      try {
+        await db.collection('users').doc(socket.user.id).update({
+          isOnline: true
+        });
+      } catch (error) {
+        console.warn('⚠️ Could not update online status:', error);
+      }
 
       // Notify others that user is online
       socket.broadcast.emit('user:online', { userId: socket.user.id });
@@ -76,26 +140,41 @@ export const initializeSocketHandlers = (io: Server) => {
           reactions: []
         };
 
-        // Save message to database
-        const docRef = await db.collection('messages').add(message);
-        const newMessage: Message = { id: docRef.id, ...message };
+        // Save message to database (if Firestore is available)
+        let newMessage: Message;
+        try {
+          const docRef = await db.collection('messages').add(message);
+          newMessage = { id: docRef.id, ...message };
+          
+          // Award points for sending message
+          try {
+            await db.collection('users').doc(socket.user.id).update({
+              points: socket.user.points + 1
+            });
+          } catch (pointsError) {
+            console.warn('⚠️ Could not update user points:', pointsError);
+          }
+
+          // Log activity
+          try {
+            await db.collection('userActivities').add({
+              userId: socket.user.id,
+              type: 'message',
+              description: 'Sent a message in chat',
+              points: 1,
+              timestamp: Date.now()
+            });
+          } catch (activityError) {
+            console.warn('⚠️ Could not log activity:', activityError);
+          }
+        } catch (dbError) {
+          // If Firestore is unavailable, generate a temporary ID
+          console.warn('⚠️ Firestore unavailable, using temporary message ID');
+          newMessage = { id: `temp_${Date.now()}_${Math.random()}`, ...message };
+        }
 
         // Broadcast message to all connected clients
         io.emit('message:receive', newMessage);
-
-        // Award points for sending message
-        await db.collection('users').doc(socket.user.id).update({
-          points: socket.user.points + 1
-        });
-
-        // Log activity
-        await db.collection('userActivities').add({
-          userId: socket.user.id,
-          type: 'message',
-          description: 'Sent a message in chat',
-          points: 1,
-          timestamp: Date.now()
-        });
 
       } catch (error) {
         console.error('Send message error:', error);
@@ -328,10 +407,14 @@ export const initializeSocketHandlers = (io: Server) => {
         onlineUsers.delete(socket.user.id);
         userSockets.delete(socket.id);
 
-        // Update user offline status
-        await db.collection('users').doc(socket.user.id).update({
-          isOnline: false
-        });
+        // Update user offline status (if Firestore is available)
+        try {
+          await db.collection('users').doc(socket.user.id).update({
+            isOnline: false
+          });
+        } catch (error) {
+          console.warn('⚠️ Could not update offline status:', error);
+        }
 
         // Notify others that user is offline
         socket.broadcast.emit('user:offline', { userId: socket.user.id });

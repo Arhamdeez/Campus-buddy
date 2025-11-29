@@ -11,9 +11,9 @@ import dotenv from 'dotenv';
 import authRoutes from './routes/auth';
 // import userRoutes from './routes/users';
 import chatRoutes from './routes/chat';
-// import announcementRoutes from './routes/announcements';
-// import lostFoundRoutes from './routes/lostFound';
-// import feedbackRoutes from './routes/feedback';
+import announcementRoutes from './routes/announcements';
+import lostFoundRoutes from './routes/lostFound';
+import feedbackRoutes from './routes/feedback';
 // import moodRoutes from './routes/mood';
 // import statusRoutes from './routes/status';
 // import badgeRoutes from './routes/badges';
@@ -47,7 +47,9 @@ const corsOptions = {
 };
 
 const io = new Server(server, {
-  cors: corsOptions
+  cors: corsOptions,
+  transports: ['websocket', 'polling'], // Support both transports
+  allowEIO3: true, // Allow Engine.IO v3 clients
 });
 
 // Security middleware
@@ -97,9 +99,9 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 // app.use('/api/users', userRoutes);
 app.use('/api/chat', chatRoutes);
-// app.use('/api/announcements', announcementRoutes);
-// app.use('/api/lost-found', lostFoundRoutes);
-// app.use('/api/feedback', feedbackRoutes);
+app.use('/api/announcements', announcementRoutes);
+app.use('/api/lost-found', lostFoundRoutes);
+app.use('/api/feedback', feedbackRoutes);
 // app.use('/api/mood', moodRoutes);
 // app.use('/api/status', statusRoutes);
 // app.use('/api/badges', badgeRoutes);

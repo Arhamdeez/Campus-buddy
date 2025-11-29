@@ -12,6 +12,7 @@ import {
   MapPinIcon,
   TrophyIcon,
   UserGroupIcon,
+  HeartIcon,
 } from '@heroicons/react/24/outline';
 
 const DashboardPage: React.FC = () => {
@@ -46,6 +47,13 @@ const DashboardPage: React.FC = () => {
       href: '/feedback',
       icon: ExclamationTriangleIcon,
       color: 'bg-red-500',
+    },
+    {
+      name: 'Confessions',
+      description: 'Share anonymously',
+      href: '/confessions',
+      icon: HeartIcon,
+      color: 'bg-pink-500',
     },
     {
       name: 'Mood Tracker',

@@ -16,6 +16,7 @@ import ChatPage from './pages/ChatPage';
 import AnnouncementsPage from './pages/AnnouncementsPage';
 import LostFoundPage from './pages/LostFoundPage';
 import FeedbackPage from './pages/FeedbackPage';
+import ConfessionsPage from './pages/ConfessionsPage';
 import MoodPage from './pages/MoodPage';
 import StatusPage from './pages/StatusPage';
 import ProfilePage from './pages/ProfilePage';
@@ -117,6 +118,7 @@ function App() {
                           <Route path="/announcements" element={<AnnouncementsPage />} />
                           <Route path="/lost-found" element={<LostFoundPage />} />
                           <Route path="/feedback" element={<FeedbackPage />} />
+                          <Route path="/confessions" element={<ConfessionsPage />} />
                           <Route path="/mood" element={<MoodPage />} />
                           <Route path="/status" element={<StatusPage />} />
                           <Route path="/profile" element={<ProfilePage />} />
