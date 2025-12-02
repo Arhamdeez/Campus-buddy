@@ -6,7 +6,7 @@ import { apiService } from '../services/api';
 import type { Announcement } from '@shared/types';
 import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import { Card, CardContent } from '../components/ui/Card';
 import Modal from '../components/ui/Modal';
 import toast from 'react-hot-toast';
 import {
@@ -41,8 +41,10 @@ const AnnouncementsPage: React.FC = () => {
     expiresAt: '',
   });
 
-  // Check if user can create announcements
-  const canCreate = user?.role === 'admin' || user?.role === 'society_head';
+  // For this app, allow any authenticated user to create announcements.
+  // (Server still enforces roles when Firestore is available; when it isn't,
+  // we fall back to local/sample announcements.)
+  const canCreate = !!user;
 
   // Fetch announcements
   const { data: announcementsData, isLoading } = useQuery({
@@ -72,15 +74,15 @@ const AnnouncementsPage: React.FC = () => {
   // Combine API and local announcements
   const allAnnouncements = useMemo(() => {
     const combined = [...announcements];
-    localAnnouncements.forEach(local => {
-      if (!combined.find(a => a.id === local.id)) {
+    localAnnouncements.forEach((local) => {
+      if (!combined.find((a) => a.id === local.id)) {
         combined.push(local);
       }
     });
     return combined.sort((a, b) => b.timestamp - a.timestamp);
   }, [announcements, localAnnouncements]);
 
-  // Auto-populate dummy data on first load if empty (for evaluation/demo)
+  // Auto-populate sample data on first load if empty (for evaluation/testing)
   useEffect(() => {
     if (allAnnouncements.length === 0) {
       const dummyAnnouncements: Announcement[] = [
@@ -173,15 +175,27 @@ const AnnouncementsPage: React.FC = () => {
     }
   }, [allAnnouncements.length]);
 
-  // Filter announcements by search query
-  const filteredAnnouncements = searchQuery
-    ? allAnnouncements.filter(
+  // Filter announcements by priority + search on the combined list so
+  // local/demo announcements are also filtered correctly.
+  const filteredAnnouncements = useMemo(() => {
+    let data = [...allAnnouncements];
+
+    if (priorityFilter) {
+      data = data.filter((ann) => ann.priority === priorityFilter);
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      data = data.filter(
         (ann) =>
-          ann.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          ann.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          ann.tags.some((tag) => tag.toLowerCase().includes(searchQuery.toLowerCase()))
-      )
-    : announcements;
+          ann.title.toLowerCase().includes(q) ||
+          ann.content.toLowerCase().includes(q) ||
+          ann.tags.some((tag) => tag.toLowerCase().includes(q)),
+      );
+    }
+
+    return data;
+  }, [allAnnouncements, priorityFilter, searchQuery]);
 
   // Create announcement mutation
   const createMutation = useMutation({
@@ -191,15 +205,58 @@ const AnnouncementsPage: React.FC = () => {
         tags: data.tags.split(',').map((t) => t.trim()).filter(Boolean),
         expiresAt: data.expiresAt ? new Date(data.expiresAt).getTime() : undefined,
       });
-      return response.data.data;
+      return response.data.data as Announcement;
     },
-    onSuccess: () => {
+    onSuccess: (created) => {
+      // Update remote data
       queryClient.invalidateQueries({ queryKey: ['announcements'] });
+
+      // Also persist locally so the announcement is visible even if Firestore
+      // is not available or the refetch returns empty.
+      setLocalAnnouncements((prev) => {
+        const updated = [created, ...prev.filter((a) => a.id !== created.id)];
+        localStorage.setItem('demo_announcements', JSON.stringify(updated));
+        return updated;
+      });
+
       setIsCreateModalOpen(false);
       resetForm();
       toast.success('Announcement created successfully!');
     },
     onError: (error: any) => {
+      // Fallback: create a local-only announcement so the feature still works in offline/sample mode
+      if (user) {
+        const now = Date.now();
+        const local: Announcement = {
+          id: `local_ann_${now}`,
+          title: formData.title.trim(),
+          content: formData.content.trim(),
+          authorId: user.id,
+          authorName: user.name,
+          societyName: formData.societyName || undefined,
+          priority: formData.priority,
+          tags: formData.tags
+            .split(',')
+            .map((t) => t.trim())
+            .filter(Boolean),
+          timestamp: now,
+          expiresAt: formData.expiresAt ? new Date(formData.expiresAt).getTime() : undefined,
+          views: 0,
+          likes: 0,
+        };
+
+        setLocalAnnouncements((prev) => {
+          const updated = [local, ...prev];
+          localStorage.setItem('demo_announcements', JSON.stringify(updated));
+          return updated;
+        });
+
+        setIsCreateModalOpen(false);
+        resetForm();
+        toast.success('Announcement created locally for this session.');
+        return;
+      }
+
       toast.error(error.response?.data?.error || 'Failed to create announcement');
     },
   });
@@ -225,17 +282,85 @@ const AnnouncementsPage: React.FC = () => {
     },
   });
 
+  // Helper to check if current user liked a given announcement (local mode)
+  const hasUserLikedAnnouncement = (id: string): boolean => {
+    const userId = user?.id || 'anonymous';
+    const storageKey = `demo_ann_likes_${userId}`;
+    try {
+      const stored = localStorage.getItem(storageKey);
+      const likedMap: Record<string, boolean> = stored ? JSON.parse(stored) : {};
+      return !!likedMap[id];
+    } catch {
+      return false;
+    }
+  };
+
   // Like mutation
   const likeMutation = useMutation({
     mutationFn: async (id: string) => {
+      // For local announcements, handle likes purely on the client
+      // and ensure each user can only like once (toggle like/unlike).
+      if (id.startsWith('demo_ann_') || id.startsWith('local_ann_') || id.startsWith('temp_ann_')) {
+        const userId = user?.id || 'anonymous';
+        const storageKey = `demo_ann_likes_${userId}`;
+        const stored = localStorage.getItem(storageKey);
+        const likedMap: Record<string, boolean> = stored ? JSON.parse(stored) : {};
+
+        const alreadyLiked = !!likedMap[id];
+
+        return await new Promise<{ liked: boolean; likes: number }>((resolve) => {
+          setLocalAnnouncements((prev) => {
+            const updated = prev.map((ann) => {
+              if (ann.id === id) {
+                const delta = alreadyLiked ? -1 : 1;
+                const newLikes = Math.max(0, (ann.likes || 0) + delta);
+
+                // Update per-user like map
+                if (alreadyLiked) {
+                  delete likedMap[id];
+                } else {
+                  likedMap[id] = true;
+                }
+                localStorage.setItem(storageKey, JSON.stringify(likedMap));
+
+                resolve({ liked: !alreadyLiked, likes: newLikes });
+                return { ...ann, likes: newLikes };
+              }
+              return ann;
+            });
+
+            localStorage.setItem('demo_announcements', JSON.stringify(updated));
+            return updated;
+          });
+        });
+      }
+
       const response = await apiService.announcements.like(id);
-      return response.data.data;
+      return response.data.data as { liked: boolean; likes: number };
     },
-    onSuccess: () => {
+    onSuccess: (result, id) => {
+      // Optimistically update likes in localAnnouncements so the UI responds immediately.
+      setLocalAnnouncements((prev) => {
+        const updated = prev.map((ann) =>
+          ann.id === id ? { ...ann, likes: result.likes } : ann,
+        );
+        localStorage.setItem('demo_announcements', JSON.stringify(updated));
+        return updated;
+      });
+
       queryClient.invalidateQueries({ queryKey: ['announcements'] });
     },
-    onError: (error: any) => {
-      toast.error(error.response?.data?.error || 'Failed to like announcement');
+    onError: (error: any, id) => {
+      // Fallback: if server like fails (e.g. Firestore down), update local copy
+      setLocalAnnouncements((prev) => {
+        const updated = prev.map((ann) =>
+          ann.id === id ? { ...ann, likes: Math.max(0, (ann.likes || 0) + 1) } : ann,
+        );
+        localStorage.setItem('demo_announcements', JSON.stringify(updated));
+        return updated;
+      });
+
+      toast.error(error.response?.data?.error || 'Server like failed, updated locally.');
     },
   });
 
@@ -443,7 +568,7 @@ const AnnouncementsPage: React.FC = () => {
                 loading={addDummyAnnouncementsMutation.isPending}
               >
                 <SparklesIcon className="h-4 w-4 mr-2" />
-                Add Demo Data
+            Add Sample Data
               </Button>
               <Button onClick={() => setIsCreateModalOpen(true)}>
                 <PlusIcon className="h-5 w-5 mr-2" />
@@ -582,10 +707,18 @@ const AnnouncementsPage: React.FC = () => {
                 <div className="flex items-center justify-between pt-4 border-t">
                   <button
                     onClick={() => likeMutation.mutate(announcement.id)}
-                    className="flex items-center gap-2 text-gray-600 hover:text-red-600 transition-colors"
+                    className={`flex items-center gap-2 transition-colors ${
+                      hasUserLikedAnnouncement(announcement.id)
+                        ? 'text-red-600'
+                        : 'text-gray-600 hover:text-red-600'
+                    }`}
                     disabled={likeMutation.isPending}
                   >
-                    <HeartIcon className="h-5 w-5" />
+                    <HeartIcon
+                      className={`h-5 w-5 ${
+                        hasUserLikedAnnouncement(announcement.id) ? 'fill-red-600 text-red-600' : ''
+                      }`}
+                    />
                     <span>{announcement.likes}</span>
                   </button>
                   {announcement.expiresAt && (

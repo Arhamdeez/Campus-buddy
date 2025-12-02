@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import Input from '../components/ui/Input';
@@ -26,25 +26,117 @@ const StatusPage: React.FC = () => {
 
   const isAdmin = user?.role === 'admin' || user?.role === 'society_head';
 
-  const statusQuery = useQuery({
-    queryKey: ['status', 'list', searchQuery],
-    queryFn: async () => {
-      if (searchQuery.trim()) {
-        const res = await apiService.status.search(searchQuery.trim());
-        return res.data.data as CampusStatus[];
-      }
-      const res = await apiService.status.getAll();
-      return res.data.data as CampusStatus[];
-    },
+  // Local statuses stored in browser so Campus Status works even without backend
+  const [localStatuses, setLocalStatuses] = useState<CampusStatus[]>(() => {
+    try {
+      const stored = localStorage.getItem('demo_statuses');
+      if (stored) return JSON.parse(stored);
+    } catch {
+      // ignore
+    }
+    return [];
   });
 
-  const popularKeywordsQuery = useQuery({
-    queryKey: ['status', 'keywords'],
+  const statusQuery = useQuery({
+    queryKey: ['status', 'list'],
     queryFn: async () => {
-      const res = await apiService.status.getPopularKeywords(8);
-      return res.data.data as Array<{ keyword: string; count: number }>;
+      try {
+        const res = await apiService.status.getAll();
+        return res.data.data as CampusStatus[];
+      } catch (error) {
+        console.warn('⚠️ Campus status API unavailable, using local/demo data only');
+        return [] as CampusStatus[];
+      }
     },
+    retry: false,
   });
+
+  const remoteStatuses = statusQuery.data || [];
+
+  // Seed sample data if nothing exists at all
+  const allStatuses = useMemo(() => {
+    let combined = [...remoteStatuses];
+    localStatuses.forEach((ls) => {
+      if (!combined.find((s) => s.id === ls.id)) combined.push(ls);
+    });
+
+    if (combined.length === 0) {
+      const now = Date.now();
+      combined = [
+        {
+          id: 'demo_status_1',
+          facility: 'Main Library',
+          status: 'busy',
+          description: 'Most study tables are occupied, quieter spots on 3rd floor.',
+          lastUpdated: now - 15 * 60 * 1000,
+          updatedBy: 'system',
+          keywords: ['library', 'study', 'seats'],
+        },
+        {
+          id: 'demo_status_2',
+          facility: 'Main Cafeteria',
+          status: 'busy',
+          description: 'Lunch rush, long queues at peak counters.',
+          lastUpdated: now - 5 * 60 * 1000,
+          updatedBy: 'system',
+          keywords: ['cafeteria', 'food', 'lunch'],
+        },
+        {
+          id: 'demo_status_3',
+          facility: 'Parking Lot A',
+          status: 'closed',
+          description: 'Closed for maintenance. Use Parking Lot B near Gate 3.',
+          lastUpdated: now - 45 * 60 * 1000,
+          updatedBy: 'system',
+          keywords: ['parking', 'gate 1', 'maintenance'],
+        },
+        {
+          id: 'demo_status_4',
+          facility: 'Sports Complex Gym',
+          status: 'available',
+          description: 'Plenty of machines free, peak hours start after 6 PM.',
+          lastUpdated: now - 10 * 60 * 1000,
+          updatedBy: 'system',
+          keywords: ['gym', 'sports', 'fitness'],
+        },
+      ] as CampusStatus[];
+
+      try {
+        localStorage.setItem('demo_statuses', JSON.stringify(combined));
+      } catch {
+        // ignore
+      }
+    }
+
+    return combined.sort((a, b) => b.lastUpdated - a.lastUpdated);
+  }, [remoteStatuses, localStatuses]);
+
+  // Apply search on top of all statuses (remote + local)
+  const filteredStatuses = useMemo(() => {
+    if (!searchQuery.trim()) return allStatuses;
+    const q = searchQuery.toLowerCase();
+    return allStatuses.filter(
+      (s) =>
+        s.facility.toLowerCase().includes(q) ||
+        s.description.toLowerCase().includes(q) ||
+        (s.keywords || []).some((k) => k.toLowerCase().includes(q)),
+    );
+  }, [allStatuses, searchQuery]);
+
+  // Popular keywords computed from whatever data we have
+  const popularKeywords = useMemo(() => {
+    const counts: Record<string, number> = {};
+    allStatuses.forEach((s) => {
+      (s.keywords || []).forEach((k) => {
+        const key = k.toLowerCase();
+        counts[key] = (counts[key] || 0) + 1;
+      });
+    });
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([keyword, count]) => ({ keyword, count }));
+  }, [allStatuses]);
 
   const createOrUpdateMutation = useMutation({
     mutationFn: async () => {
@@ -61,7 +153,36 @@ const StatusPage: React.FC = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['status', 'list'] });
-      queryClient.invalidateQueries({ queryKey: ['status', 'keywords'] });
+      setFacility('');
+      setDescription('');
+      setKeywords('');
+    },
+    onError: () => {
+      // Fallback: create/update a local status entry so the feature still works in demo mode
+      const now = Date.now();
+      const local: CampusStatus = {
+        id: `local_status_${now}`,
+        facility,
+        status,
+        description,
+        keywords: keywords
+          .split(',')
+          .map((k) => k.trim())
+          .filter(Boolean),
+        lastUpdated: now,
+        updatedBy: user?.name || 'You',
+      };
+
+      setLocalStatuses((prev) => {
+        const updated = [local, ...prev];
+        try {
+          localStorage.setItem('demo_statuses', JSON.stringify(updated));
+        } catch {
+          // ignore
+        }
+        return updated;
+      });
+
       setFacility('');
       setDescription('');
       setKeywords('');
@@ -106,11 +227,11 @@ const StatusPage: React.FC = () => {
                 </Button>
               </div>
 
-              {popularKeywordsQuery.data && popularKeywordsQuery.data.length > 0 && (
+              {popularKeywords.length > 0 && (
                 <div className="mt-4">
                   <p className="text-xs text-gray-500 mb-2">Popular keywords</p>
                   <div className="flex flex-wrap gap-2">
-                    {popularKeywordsQuery.data.map(({ keyword }) => (
+                    {popularKeywords.map(({ keyword }) => (
                       <button
                         key={keyword}
                         type="button"
@@ -131,13 +252,13 @@ const StatusPage: React.FC = () => {
               <CardTitle>Latest updates</CardTitle>
             </CardHeader>
             <CardContent>
-              {statusQuery.isLoading ? (
+              {statusQuery.isLoading && allStatuses.length === 0 ? (
                 <div className="flex items-center justify-center py-8">
                   <LoadingSpinner size="md" />
                 </div>
-              ) : statusQuery.data && statusQuery.data.length > 0 ? (
+              ) : filteredStatuses.length > 0 ? (
                 <ul className="divide-y divide-gray-100">
-                  {statusQuery.data.map((s) => (
+                  {filteredStatuses.map((s) => (
                     <li key={s.id} className="py-3 flex items-start justify-between gap-4">
                       <div>
                         <div className="flex items-center gap-2">

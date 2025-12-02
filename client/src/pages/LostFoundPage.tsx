@@ -74,15 +74,41 @@ const LostFoundPage: React.FC = () => {
   // Combine API and local items
   const allItems = useMemo(() => {
     const combined = [...items];
-    localItems.forEach(local => {
-      if (!combined.find(i => i.id === local.id)) {
+    localItems.forEach((local) => {
+      if (!combined.find((i) => i.id === local.id)) {
         combined.push(local);
       }
     });
     return combined.sort((a, b) => b.timestamp - a.timestamp);
   }, [items, localItems]);
 
-  // Auto-populate dummy data on first load if empty (for evaluation/demo)
+  // Apply search + status/category filters on the combined list so that
+  // local items are also filtered correctly.
+  const filteredItems = useMemo(() => {
+    let data = [...allItems];
+
+    if (statusFilter) {
+      data = data.filter((item) => item.status === statusFilter);
+    }
+
+    if (categoryFilter) {
+      data = data.filter((item) => item.category === categoryFilter);
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      data = data.filter(
+        (item) =>
+          item.title.toLowerCase().includes(q) ||
+          item.description.toLowerCase().includes(q) ||
+          item.location.toLowerCase().includes(q),
+      );
+    }
+
+    return data;
+  }, [allItems, statusFilter, categoryFilter, searchQuery]);
+
+  // Auto-populate sample data on first load if empty (for evaluation/testing)
   useEffect(() => {
     if (allItems.length === 0) {
       const dummyItems: LostFoundItem[] = [
@@ -500,7 +526,7 @@ const LostFoundPage: React.FC = () => {
             loading={addDummyItemsMutation.isPending}
           >
             <SparklesIcon className="h-4 w-4 mr-2" />
-            Add Demo Data
+            Add Sample Data
           </Button>
           <Button onClick={() => setIsCreateModalOpen(true)}>
             <PlusIcon className="h-5 w-5 mr-2" />
@@ -571,20 +597,20 @@ const LostFoundPage: React.FC = () => {
         <div className="text-center py-12">
           <p className="text-gray-500">Loading items...</p>
         </div>
-      ) : allItems.length === 0 ? (
+      ) : filteredItems.length === 0 ? (
         <Card>
           <CardContent className="text-center py-12">
             <p className="text-gray-500 text-lg">No items found</p>
             <p className="text-gray-400 mt-2">
               {searchQuery || statusFilter || categoryFilter
-                ? 'Try adjusting your filters'
+                ? 'No items match your filters. Try adjusting them.'
                 : 'Be the first to report a lost or found item!'}
             </p>
           </CardContent>
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {allItems.map((item) => (
+          {filteredItems.map((item) => (
             <Card key={item.id} className="hover:shadow-lg transition-shadow">
               <CardContent className="p-4">
                 <div className="flex items-start justify-between mb-2">

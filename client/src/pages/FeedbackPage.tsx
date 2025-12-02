@@ -6,7 +6,7 @@ import { apiService } from '../services/api';
 import type { AnonymousFeedback } from '@shared/types';
 import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import { Card, CardContent } from '../components/ui/Card';
 import Modal from '../components/ui/Modal';
 import toast from 'react-hot-toast';
 import {
@@ -17,7 +17,6 @@ import {
   SparklesIcon,
   XMarkIcon,
   CheckCircleIcon,
-  ClockIcon,
   EyeIcon,
   TrashIcon,
 } from '@heroicons/react/24/outline';
@@ -81,24 +80,44 @@ const FeedbackPage: React.FC = () => {
   // Combine API and local feedback
   const allFeedback = useMemo(() => {
     const combined = [...feedback];
-    localFeedback.forEach(local => {
-      if (!combined.find(f => f.id === local.id)) {
+    localFeedback.forEach((local) => {
+      if (!combined.find((f) => f.id === local.id)) {
         combined.push(local);
       }
     });
     return combined.sort((a, b) => b.timestamp - a.timestamp);
   }, [feedback, localFeedback]);
 
-  // Filter by search query
-  const filteredFeedback = searchQuery
-    ? allFeedback.filter(
-        (item) =>
-          item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          item.content.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : allFeedback;
+  // Apply type/status/category + search filters on the combined list so that
+  // local feedback is filtered correctly as well.
+  const filteredFeedback = useMemo(() => {
+    let data = [...allFeedback];
 
-  // Auto-populate dummy data on first load if empty (for evaluation/demo)
+    if (typeFilter) {
+      data = data.filter((item) => item.type === typeFilter);
+    }
+
+    if (statusFilter) {
+      data = data.filter((item) => item.status === statusFilter);
+    }
+
+    if (categoryFilter) {
+      data = data.filter((item) => item.category === categoryFilter);
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      data = data.filter(
+        (item) =>
+          item.title.toLowerCase().includes(q) ||
+          item.content.toLowerCase().includes(q),
+      );
+    }
+
+    return data;
+  }, [allFeedback, typeFilter, statusFilter, categoryFilter, searchQuery]);
+
+  // Auto-populate sample data on first load if empty (for evaluation/testing)
   useEffect(() => {
     if (allFeedback.length === 0) {
       const dummyFeedback: AnonymousFeedback[] = [
@@ -197,17 +216,119 @@ const FeedbackPage: React.FC = () => {
     },
   });
 
-  // Vote mutation
+  // Helper to get current user's vote for a given feedback item (local mode)
+  const getUserVoteForFeedback = (id: string): 'up' | 'down' | null => {
+    const userId = user?.id || 'anonymous';
+    const storageKey = `demo_fb_votes_${userId}`;
+    try {
+      const stored = localStorage.getItem(storageKey);
+      const voteMap: Record<string, 'up' | 'down'> = stored ? JSON.parse(stored) : {};
+      return voteMap[id] || null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Vote mutation (with local/offline fallback)
   const voteMutation = useMutation({
     mutationFn: async ({ id, voteType }: { id: string; voteType: 'up' | 'down' }) => {
+      // Handle local/sample feedback entirely on the client so voting works even when
+      // the backend or Firestore is unavailable.
+      if (id.startsWith('demo_fb_') || id.startsWith('local_fb_') || id.startsWith('temp_fb_')) {
+        const userId = user?.id || 'anonymous';
+        const storageKey = `demo_fb_votes_${userId}`;
+        const stored = localStorage.getItem(storageKey);
+        const voteMap: Record<string, 'up' | 'down' | undefined> = stored ? JSON.parse(stored) : {};
+
+        const previousVote = voteMap[id]; // 'up', 'down', or undefined
+
+        return await new Promise<{ upvotes: number; downvotes: number }>((resolve) => {
+          setLocalFeedback((prev) => {
+            const updated = prev.map((fb) => {
+              if (fb.id !== id) return fb;
+
+              let { upvotes, downvotes } = fb;
+
+              // Remove previous vote
+              if (previousVote === 'up') upvotes = Math.max(0, upvotes - 1);
+              if (previousVote === 'down') downvotes = Math.max(0, downvotes - 1);
+
+              // Apply new vote (toggle if same type → no new vote)
+              let newVote: 'up' | 'down' | undefined = previousVote;
+              if (voteType === previousVote) {
+                newVote = undefined;
+              } else {
+                newVote = voteType;
+                if (voteType === 'up') upvotes += 1;
+                if (voteType === 'down') downvotes += 1;
+              }
+
+              // Persist per-user vote
+              if (newVote) {
+                voteMap[id] = newVote;
+              } else {
+                delete voteMap[id];
+              }
+              localStorage.setItem(storageKey, JSON.stringify(voteMap));
+
+              const result = { upvotes, downvotes };
+              resolve(result);
+              return { ...fb, upvotes, downvotes };
+            });
+
+            localStorage.setItem('demo_feedback', JSON.stringify(updated));
+            return updated;
+          });
+        });
+      }
+
       const response = await apiService.feedback.vote(id, voteType);
-      return response.data.data;
+      return response.data.data as { upvotes: number; downvotes: number };
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['feedback'] });
+    onSuccess: (result, variables) => {
+      const isDemo =
+        variables.id.startsWith('demo_fb_') ||
+        variables.id.startsWith('local_fb_') ||
+        variables.id.startsWith('temp_fb_');
+
+      // For real feedback items, optimistically update localFeedback so UI reacts immediately.
+      if (!isDemo) {
+        setLocalFeedback((prev) => {
+          const updated = prev.map((fb) =>
+            fb.id === variables.id
+              ? { ...fb, upvotes: result.upvotes, downvotes: result.downvotes }
+              : fb,
+          );
+          localStorage.setItem('demo_feedback', JSON.stringify(updated));
+          return updated;
+        });
+
+        // Only refetch from server for real items, so local votes don't cause a
+        // loading flash / page "refresh" feeling.
+        queryClient.invalidateQueries({ queryKey: ['feedback'] });
+      }
     },
-    onError: (error: any) => {
-      toast.error(error.response?.data?.error || 'Failed to vote');
+    onError: (error: any, variables) => {
+      const isDemo =
+        variables.id.startsWith('demo_fb_') ||
+        variables.id.startsWith('local_fb_') ||
+        variables.id.startsWith('temp_fb_');
+
+      // If the server vote fails for real items, fall back to local update so
+      // the user still sees their vote applied.
+      if (!isDemo) {
+        setLocalFeedback((prev) =>
+          prev.map((fb) => {
+            if (fb.id !== variables.id) return fb;
+            if (variables.voteType === 'up') {
+              return { ...fb, upvotes: fb.upvotes + 1 };
+            }
+            return { ...fb, downvotes: fb.downvotes + 1 };
+          }),
+        );
+      }
+
+      toast.error(error.response?.data?.error || 'Vote saved locally (server unavailable).');
     },
   });
 
@@ -411,7 +532,7 @@ const FeedbackPage: React.FC = () => {
             loading={addDummyFeedbackMutation.isPending}
           >
             <SparklesIcon className="h-4 w-4 mr-2" />
-            Add Demo Data
+            Add Sample Data
           </Button>
           <Button onClick={() => setIsCreateModalOpen(true)}>
             <PlusIcon className="h-5 w-5 mr-2" />
@@ -497,13 +618,13 @@ const FeedbackPage: React.FC = () => {
         <div className="text-center py-12">
           <p className="text-gray-500">Loading feedback...</p>
         </div>
-      ) : allFeedback.length === 0 ? (
+      ) : filteredFeedback.length === 0 ? (
         <Card>
           <CardContent className="text-center py-12">
             <p className="text-gray-500 text-lg">No feedback found</p>
             <p className="text-gray-400 mt-2">
               {searchQuery || typeFilter || statusFilter || categoryFilter
-                ? 'Try adjusting your filters'
+                ? 'No feedback matches your filters. Try adjusting them.'
                 : 'Be the first to share your feedback!'}
             </p>
           </CardContent>
@@ -567,18 +688,34 @@ const FeedbackPage: React.FC = () => {
                   <div className="flex items-center gap-4">
                     <button
                       onClick={() => handleVote(item.id, 'up')}
-                      className="flex items-center gap-2 text-gray-600 hover:text-green-600 transition-colors"
+                      className={`flex items-center gap-2 transition-colors ${
+                        getUserVoteForFeedback(item.id) === 'up'
+                          ? 'text-green-600'
+                          : 'text-gray-600 hover:text-green-600'
+                      }`}
                       disabled={voteMutation.isPending}
                     >
-                      <HandThumbUpIcon className="h-5 w-5" />
+                      <HandThumbUpIcon
+                        className={`h-5 w-5 ${
+                          getUserVoteForFeedback(item.id) === 'up' ? 'fill-green-600 text-green-600' : ''
+                        }`}
+                      />
                       <span>{item.upvotes}</span>
                     </button>
                     <button
                       onClick={() => handleVote(item.id, 'down')}
-                      className="flex items-center gap-2 text-gray-600 hover:text-red-600 transition-colors"
+                      className={`flex items-center gap-2 transition-colors ${
+                        getUserVoteForFeedback(item.id) === 'down'
+                          ? 'text-red-600'
+                          : 'text-gray-600 hover:text-red-600'
+                      }`}
                       disabled={voteMutation.isPending}
                     >
-                      <HandThumbDownIcon className="h-5 w-5" />
+                      <HandThumbDownIcon
+                        className={`h-5 w-5 ${
+                          getUserVoteForFeedback(item.id) === 'down' ? 'fill-red-600 text-red-600' : ''
+                        }`}
+                      />
                       <span>{item.downvotes}</span>
                     </button>
                   </div>

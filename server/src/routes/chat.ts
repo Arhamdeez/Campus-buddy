@@ -238,22 +238,13 @@ router.post('/summary', authenticateToken, async (req: AuthRequest, res: express
         messages.push(doc.data() as Message);
       });
     } catch (firestoreError) {
-      console.warn('⚠️ Firestore unavailable for chat summary, using placeholder');
-      // Return a placeholder summary if Firestore is unavailable
-      const placeholderSummary: Omit<ChatSummary, 'id'> = {
-        summary: `📊 Chat Summary (Placeholder)\n\nThis is a placeholder summary for demonstration purposes. In a production environment with Firestore enabled, this would contain:\n\n• Key topics discussed in the chat\n• Important announcements shared\n• Questions asked by students\n• Notable conversations and insights\n\nTo enable full functionality, please enable the Cloud Firestore API in your Google Cloud Console.`,
-        messageCount: 0,
-        timeRange: {
-          start: startTime || Date.now() - (24 * 60 * 60 * 1000),
-          end: endTime || Date.now()
-        },
-        generatedAt: Date.now()
-      };
-
-      res.json({
-        success: true,
-        data: { id: 'placeholder_summary', ...placeholderSummary } as ChatSummary
-      } as ApiResponse<ChatSummary>);
+      console.warn('⚠️ Firestore unavailable for chat summary, signaling client to use local/demo summary');
+      // When Firestore is unavailable, return an error so the client can fall back
+      // to its own local/demo summary of the visible chat messages.
+      res.status(503).json({
+        success: false,
+        error: 'Chat summary service is temporarily unavailable. Please use local summary.'
+      } as ApiResponse<null>);
       return;
     }
 

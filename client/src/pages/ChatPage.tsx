@@ -7,7 +7,7 @@ import { apiService } from '../services/api';
 import type { Message, ChatSummary } from '@shared/types';
 import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import { Card, CardContent } from '../components/ui/Card';
 import Modal from '../components/ui/Modal';
 import toast from 'react-hot-toast';
 import {
@@ -19,6 +19,62 @@ import {
 
 const EMOJI_REACTIONS = ['👍', '❤️', '😂', '😮', '🎉', '🔥'];
 
+// Simple client-side summary generator for chats / offline mode.
+// Returns just 1–2 concise lines describing what people are talking about.
+function generateLocalChatSummary(messages: Message[]): ChatSummary {
+  const now = Date.now();
+
+  if (!messages.length) {
+    return {
+      id: 'local_demo_summary',
+      summary: 'No messages available to summarize.',
+      messageCount: 0,
+      timeRange: {
+        start: now,
+        end: now,
+      },
+      generatedAt: now,
+    };
+  }
+
+  const total = messages.length;
+  const first = messages[0];
+
+  const uniqueAuthors = Array.from(
+    new Map(messages.map((m) => [m.authorId, m.authorName])).values()
+  );
+
+  const topicHint =
+    messages.find((m) =>
+      /exam|test|assignment|project|library|class|meeting|study|deadline|announcement/i.test(
+        m.content,
+      ),
+    )?.content || first.content;
+
+  const line1 = `Students are mainly talking about: "${topicHint.substring(0, 120)}${
+    topicHint.length > 120 ? '...' : ''
+  }".`;
+  const line2 = `Around ${total} messages were exchanged between ${uniqueAuthors.join(
+    ', ',
+  )}.`;
+
+  const summaryText = `${line1}\n${line2}`;
+
+  const start = Math.min(...messages.map((m) => m.timestamp));
+  const end = Math.max(...messages.map((m) => m.timestamp));
+
+  return {
+    id: 'local_demo_summary',
+    summary: summaryText,
+    messageCount: total,
+    timeRange: {
+      start,
+      end,
+    },
+    generatedAt: now,
+  };
+}
+
 const ChatPage: React.FC = () => {
   const { user } = useAuth();
   const { sendMessage, editMessage, deleteMessage, addReaction, setTyping, isConnected } = useSocket();
@@ -28,6 +84,7 @@ const ChatPage: React.FC = () => {
   const [editingContent, setEditingContent] = useState('');
   const [summaryModalOpen, setSummaryModalOpen] = useState(false);
   const [currentSummary, setCurrentSummary] = useState<ChatSummary | null>(null);
+  const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -62,16 +119,22 @@ const ChatPage: React.FC = () => {
     },
   });
 
-  const messages: Message[] = messagesData?.data || [];
+  const serverMessages: Message[] = messagesData?.data || [];
+  const messages: Message[] =
+    serverMessages.length > 0
+      ? serverMessages
+      : localMessages.length > 0
+        ? localMessages
+        : [];
 
-  // Auto-populate dummy messages on first load if empty (for evaluation/demo)
+  // Auto-populate sample messages on first load if empty (for evaluation/testing)
   useEffect(() => {
     if (!isLoading && messages.length === 0 && !localStorage.getItem('chat_demo_added')) {
       // Small delay to let the page render first
       const timer = setTimeout(() => {
         addDummyMessages();
         localStorage.setItem('chat_demo_added', 'true');
-        toast.success('Demo messages loaded!', { duration: 2000 });
+        toast.success('Sample messages loaded!', { duration: 2000 });
       }, 1000);
       return () => clearTimeout(timer);
     }
@@ -117,8 +180,9 @@ const ChatPage: React.FC = () => {
             new Map(updated.map((msg: Message) => [msg.id, msg])).values()
           ).sort((a: Message, b: Message) => a.timestamp - b.timestamp);
           
-          // Persist to localStorage
+          // Persist to localStorage and local state
           localStorage.setItem('campusbuddy_chat_messages', JSON.stringify(unique));
+          setLocalMessages(unique);
           
           return { ...old, data: unique, total: unique.length };
         });
@@ -149,6 +213,18 @@ const ChatPage: React.FC = () => {
       });
     },
     onError: (error: any) => {
+      // If the server cannot generate a summary (e.g. Firestore disabled or no messages),
+      // fall back to a local, client-side summary of the current chats.
+      if (messages.length > 0) {
+        const localSummary = generateLocalChatSummary(messages);
+        setCurrentSummary(localSummary);
+        setSummaryModalOpen(true);
+        toast.success('Summary generated locally from current chat messages.', {
+          duration: 3000,
+        });
+        return;
+      }
+
       toast.error(error.response?.data?.error || 'Failed to generate summary');
     },
   });
@@ -166,6 +242,7 @@ const ChatPage: React.FC = () => {
         new Map(updatedMessages.map(msg => [msg.id, msg])).values()
       ).sort((a, b) => a.timestamp - b.timestamp);
       localStorage.setItem('campusbuddy_chat_messages', JSON.stringify(uniqueMessages));
+      setLocalMessages(uniqueMessages);
 
       queryClient.setQueryData(['chat', 'messages'], (old: any) => {
         if (!old) {
@@ -393,6 +470,7 @@ const ChatPage: React.FC = () => {
       new Map(allMessages.map(msg => [msg.id, msg])).values()
     ).sort((a, b) => a.timestamp - b.timestamp);
     localStorage.setItem('campusbuddy_chat_messages', JSON.stringify(uniqueMessages));
+    setLocalMessages(uniqueMessages);
 
     // Add dummy messages to the query cache
     queryClient.setQueryData(['chat', 'messages'], (old: any) => {
@@ -415,31 +493,11 @@ const ChatPage: React.FC = () => {
   // Load persisted messages from localStorage on mount
   useEffect(() => {
     const persistedMessages = localStorage.getItem('campusbuddy_chat_messages');
-    if (persistedMessages && messages.length === 0) {
+    if (persistedMessages) {
       try {
         const parsedMessages: Message[] = JSON.parse(persistedMessages);
         if (parsedMessages.length > 0) {
-          queryClient.setQueryData(['chat', 'messages'], (old: any) => {
-            if (!old) {
-              return {
-                data: parsedMessages,
-                total: parsedMessages.length,
-                page: 1,
-                limit: 50,
-                hasMore: false,
-              };
-            }
-            // Merge with existing, remove duplicates
-            const combined = [...old.data, ...parsedMessages];
-            const unique = Array.from(
-              new Map(combined.map((msg: Message) => [msg.id, msg])).values()
-            ).sort((a: Message, b: Message) => a.timestamp - b.timestamp);
-            return {
-              ...old,
-              data: unique,
-              total: unique.length,
-            };
-          });
+          setLocalMessages(parsedMessages);
         }
       } catch (error) {
         console.error('Failed to load persisted messages:', error);

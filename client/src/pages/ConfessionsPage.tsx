@@ -21,6 +21,20 @@ import {
 
 const CATEGORIES = ['general', 'academic', 'facilities', 'food', 'events', 'other'];
 
+// Legacy, non-spicy seed titles we want to hide/replace in the UI
+const LEGACY_CONFESSION_TITLES = new Set([
+  'Feeling Homesick',
+  'Study Struggles',
+  'Imposter Syndrome',
+  'Social Anxiety',
+  'Procrastination Problem',
+  'Feeling Proud',
+  'Missing Home Cooking',
+  'Late Night Thoughts',
+  'Grateful for Friends',
+  'First Love',
+]);
+
 const ConfessionsPage: React.FC = () => {
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -64,33 +78,53 @@ const ConfessionsPage: React.FC = () => {
   // Combine API and local confessions
   const allConfessions = useMemo(() => {
     const combined = [...confessions];
-    localConfessions.forEach(local => {
-      if (!combined.find(c => c.id === local.id)) {
+    localConfessions.forEach((local) => {
+      if (!combined.find((c) => c.id === local.id)) {
         combined.push(local);
       }
     });
     return combined.sort((a, b) => b.timestamp - a.timestamp);
   }, [confessions, localConfessions]);
 
-  // Filter by search query
-  const filteredConfessions = searchQuery
-    ? allConfessions.filter(
-        (item) =>
-          item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          item.content.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : allConfessions;
+  // Apply category + search filters on the combined list so that
+  // local confessions are also filtered correctly.
+  const filteredConfessions = useMemo(() => {
+    // First remove legacy, non-spicy demo confessions
+    let data = allConfessions.filter(
+      (item) => !LEGACY_CONFESSION_TITLES.has(item.title),
+    );
 
-  // Auto-populate dummy data on first load if empty (for evaluation/demo)
+    if (categoryFilter) {
+      data = data.filter((item) => item.category === categoryFilter);
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      data = data.filter(
+        (item) =>
+          item.title.toLowerCase().includes(q) ||
+          item.content.toLowerCase().includes(q),
+      );
+    }
+
+    return data;
+  }, [allConfessions, categoryFilter, searchQuery]);
+
+  // Auto-populate spicy/campus-life sample data if there are no non-legacy confessions
   useEffect(() => {
-    if (allConfessions.length === 0) {
+    const nonLegacy = allConfessions.filter(
+      (c) => !LEGACY_CONFESSION_TITLES.has(c.title),
+    );
+
+    if (nonLegacy.length === 0) {
       const dummyConfessions: AnonymousFeedback[] = [
         {
           id: 'demo_conf_1',
           type: 'confession',
-          title: 'Study Struggles',
-          content: 'I\'ve been struggling with my studies lately and feeling overwhelmed. It\'s hard to keep up with all the assignments and exams. Just needed to get this off my chest.',
-          category: 'academic',
+          title: 'Lecture Hall Crush',
+          content:
+            "There's this person who always sits two rows ahead of me in the 9 AM lecture. I pretend to be interested in the slides but I'm really just hoping they'll look back and notice me once. I know their coffee order, their backpack color, everything—just not their name.",
+          category: 'general',
           priority: 'low',
           status: 'pending',
           timestamp: Date.now() - 2 * 24 * 60 * 60 * 1000,
@@ -99,10 +133,11 @@ const ConfessionsPage: React.FC = () => {
         },
         {
           id: 'demo_conf_2',
-          title: 'Feeling Homesick',
-          content: 'I\'ve been feeling really homesick lately. It\'s my first semester away from home and I\'m finding it harder than I expected. Just wanted to share this anonymously.',
+          title: 'Group Project Feelings',
+          content:
+            'I said I\'d take the "documentation" part of the group project just so I could sit next to my crush during meetings. The project is almost done and I still haven\'t decided if I\'m more stressed about the grade or about them finding out.',
           type: 'confession',
-          category: 'general',
+          category: 'academic',
           priority: 'low',
           status: 'pending',
           timestamp: Date.now() - 1 * 24 * 60 * 60 * 1000,
@@ -112,8 +147,9 @@ const ConfessionsPage: React.FC = () => {
         {
           id: 'demo_conf_3',
           type: 'confession',
-          title: 'Imposter Syndrome',
-          content: 'Sometimes I feel like I don\'t belong here and everyone else is smarter than me. I know it\'s probably just in my head, but it\'s hard to shake this feeling.',
+          title: 'Lab Partner Crush',
+          content:
+            "My lab partner always explains concepts to me so patiently and it low‑key makes my heart melt. I pretend I don't understand things sometimes just so they'll lean over and walk me through it again.",
           category: 'academic',
           priority: 'low',
           status: 'pending',
@@ -124,8 +160,9 @@ const ConfessionsPage: React.FC = () => {
         {
           id: 'demo_conf_4',
           type: 'confession',
-          title: 'Social Anxiety',
-          content: 'I find it really hard to make friends. Everyone seems to have their groups already and I feel like I\'m always on the outside. Wish I was better at socializing.',
+          title: 'Library Encounter',
+          content:
+            "I bumped into someone in the library doorway, we both dropped our books, apologized, laughed, and then just walked away. I replay that 5‑second interaction in my head like it was a whole K‑drama episode.",
           category: 'general',
           priority: 'low',
           status: 'pending',
@@ -136,9 +173,10 @@ const ConfessionsPage: React.FC = () => {
         {
           id: 'demo_conf_5',
           type: 'confession',
-          title: 'Procrastination Problem',
-          content: 'I keep procrastinating on my assignments and then stress about them at the last minute. I know I should start earlier but I can\'t seem to break this cycle.',
-          category: 'academic',
+          title: 'Accidental Late‑Night Text',
+          content:
+            "I typed out a whole paragraph about how much I like my crush just to vent, and I accidentally sent it to them instead of my friend. I turned my phone on airplane mode and pretended I fell asleep. We still haven't talked about it.",
+          category: 'general',
           priority: 'low',
           status: 'pending',
           timestamp: Date.now() - 5 * 24 * 60 * 60 * 1000,
@@ -148,9 +186,10 @@ const ConfessionsPage: React.FC = () => {
         {
           id: 'demo_conf_6',
           type: 'confession',
-          title: 'Feeling Proud',
-          content: 'I finally got an A on my midterm after failing the first one. I worked so hard and I\'m really proud of myself. Just wanted to share this win!',
-          category: 'academic',
+          title: 'Secret Supporter',
+          content:
+            "There's someone in my class who always looks tired and stressed. I've anonymously left them little sticky‑note compliments and snacks a few times. I don't know if they know it's me, but I hope it makes their day a bit better.",
+          category: 'general',
           priority: 'low',
           status: 'pending',
           timestamp: Date.now() - 6 * 24 * 60 * 60 * 1000,
@@ -184,17 +223,119 @@ const ConfessionsPage: React.FC = () => {
     },
   });
 
-  // Vote mutation
+  // Helper to get current user's vote for a confession (local mode)
+  const getUserVoteForConfession = (id: string): 'up' | 'down' | null => {
+    const userId = user?.id || 'anonymous';
+    const storageKey = `demo_conf_votes_${userId}`;
+    try {
+      const stored = localStorage.getItem(storageKey);
+      const voteMap: Record<string, 'up' | 'down'> = stored ? JSON.parse(stored) : {};
+      return voteMap[id] || null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Vote mutation (with local/offline fallback)
   const voteMutation = useMutation({
     mutationFn: async ({ id, voteType }: { id: string; voteType: 'up' | 'down' }) => {
+      // Handle local/sample confessions entirely on the client so voting works even when
+      // the backend or Firestore is unavailable.
+      if (id.startsWith('demo_conf_') || id.startsWith('local_conf_') || id.startsWith('temp_conf_')) {
+        const userId = user?.id || 'anonymous';
+        const storageKey = `demo_conf_votes_${userId}`;
+        const stored = localStorage.getItem(storageKey);
+        const voteMap: Record<string, 'up' | 'down' | undefined> = stored ? JSON.parse(stored) : {};
+
+        const previousVote = voteMap[id]; // 'up', 'down', or undefined
+
+        return await new Promise<{ upvotes: number; downvotes: number }>((resolve) => {
+          setLocalConfessions((prev) => {
+            const updated = prev.map((conf) => {
+              if (conf.id !== id) return conf;
+
+              let { upvotes, downvotes } = conf;
+
+              // Remove previous vote
+              if (previousVote === 'up') upvotes = Math.max(0, upvotes - 1);
+              if (previousVote === 'down') downvotes = Math.max(0, downvotes - 1);
+
+              // Apply new vote (toggle if same type → no new vote)
+              let newVote: 'up' | 'down' | undefined = previousVote;
+              if (voteType === previousVote) {
+                newVote = undefined;
+              } else {
+                newVote = voteType;
+                if (voteType === 'up') upvotes += 1;
+                if (voteType === 'down') downvotes += 1;
+              }
+
+              // Persist per-user vote
+              if (newVote) {
+                voteMap[id] = newVote;
+              } else {
+                delete voteMap[id];
+              }
+              localStorage.setItem(storageKey, JSON.stringify(voteMap));
+
+              const result = { upvotes, downvotes };
+              resolve(result);
+              return { ...conf, upvotes, downvotes };
+            });
+
+            localStorage.setItem('demo_confessions', JSON.stringify(updated));
+            return updated;
+          });
+        });
+      }
+
       const response = await apiService.feedback.vote(id, voteType);
-      return response.data.data;
+      return response.data.data as { upvotes: number; downvotes: number };
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['confessions'] });
+    onSuccess: (result, variables) => {
+      const isDemo =
+        variables.id.startsWith('demo_conf_') ||
+        variables.id.startsWith('local_conf_') ||
+        variables.id.startsWith('temp_conf_');
+
+      // For real confessions, optimistically update localConfessions so UI reacts immediately.
+      if (!isDemo) {
+        setLocalConfessions((prev) => {
+          const updated = prev.map((conf) =>
+            conf.id === variables.id
+              ? { ...conf, upvotes: result.upvotes, downvotes: result.downvotes }
+              : conf,
+          );
+          localStorage.setItem('demo_confessions', JSON.stringify(updated));
+          return updated;
+        });
+
+        // Only refetch from server for real items, so local votes don't cause a
+        // loading flash / "refresh" feeling.
+        queryClient.invalidateQueries({ queryKey: ['confessions'] });
+      }
     },
-    onError: (error: any) => {
-      toast.error(error.response?.data?.error || 'Failed to vote');
+    onError: (error: any, variables) => {
+      const isDemo =
+        variables.id.startsWith('demo_conf_') ||
+        variables.id.startsWith('local_conf_') ||
+        variables.id.startsWith('temp_conf_');
+
+      // If the server vote fails for real items, fall back to local update so
+      // the user still sees their vote applied.
+      if (!isDemo) {
+        setLocalConfessions((prev) =>
+          prev.map((conf) => {
+            if (conf.id !== variables.id) return conf;
+            if (variables.voteType === 'up') {
+              return { ...conf, upvotes: conf.upvotes + 1 };
+            }
+            return { ...conf, downvotes: conf.downvotes + 1 };
+          }),
+        );
+      }
+
+      toast.error(error.response?.data?.error || 'Vote saved locally (server unavailable).');
     },
   });
 
@@ -204,71 +345,81 @@ const ConfessionsPage: React.FC = () => {
       const dummyConfessions = [
         {
           type: 'confession' as AnonymousFeedback['type'],
-          title: 'Study Struggles',
-          content: 'I\'ve been struggling with my studies lately and feeling overwhelmed. It\'s hard to keep up with all the assignments and exams. Just needed to get this off my chest.',
-          category: 'academic',
-          priority: 'low' as AnonymousFeedback['priority'],
-        },
-        {
-          type: 'confession' as AnonymousFeedback['type'],
-          title: 'Feeling Homesick',
-          content: 'I\'ve been feeling really homesick lately. It\'s my first semester away from home and I\'m finding it harder than I expected. Just wanted to share this anonymously.',
+          title: 'Lecture Hall Crush',
+          content:
+            "There's this person who always sits two rows ahead of me in the 9 AM lecture. I pretend to be interested in the slides but I'm really just hoping they'll look back and notice me once.",
           category: 'general',
           priority: 'low' as AnonymousFeedback['priority'],
         },
         {
           type: 'confession' as AnonymousFeedback['type'],
-          title: 'Imposter Syndrome',
-          content: 'Sometimes I feel like I don\'t belong here and everyone else is smarter than me. I know it\'s probably just in my head, but it\'s hard to shake this feeling.',
+          title: 'Group Project Feelings',
+          content:
+            "I volunteered for documentation in the group project just so I could sit next to my crush during meetings.",
           category: 'academic',
           priority: 'low' as AnonymousFeedback['priority'],
         },
         {
           type: 'confession' as AnonymousFeedback['type'],
-          title: 'Social Anxiety',
-          content: 'I find it really hard to make friends. Everyone seems to have their groups already and I feel like I\'m always on the outside. Wish I was better at socializing.',
+          title: 'Lab Partner Crush',
+          content:
+            "My lab partner explains concepts so patiently that I pretend not to get things just to keep them talking.",
+          category: 'academic',
+          priority: 'low' as AnonymousFeedback['priority'],
+        },
+        {
+          type: 'confession' as AnonymousFeedback['type'],
+          title: 'Library Encounter',
+          content:
+            "We bumped into each other at the library entrance, dropped our books, laughed, and walked away. I've been thinking about that five seconds for days.",
           category: 'general',
           priority: 'low' as AnonymousFeedback['priority'],
         },
         {
           type: 'confession' as AnonymousFeedback['type'],
-          title: 'Procrastination Problem',
-          content: 'I keep procrastinating on my assignments and then stress about them at the last minute. I know I should start earlier but I can\'t seem to break this cycle.',
-          category: 'academic',
-          priority: 'low' as AnonymousFeedback['priority'],
-        },
-        {
-          type: 'confession' as AnonymousFeedback['type'],
-          title: 'Missing Home Cooking',
-          content: 'I really miss my mom\'s cooking. The cafeteria food just doesn\'t compare. Sometimes I just want a home-cooked meal.',
-          category: 'food',
-          priority: 'low' as AnonymousFeedback['priority'],
-        },
-        {
-          type: 'confession' as AnonymousFeedback['type'],
-          title: 'Feeling Proud',
-          content: 'I finally got an A on my midterm after failing the first one. I worked so hard and I\'m really proud of myself. Just wanted to share this win!',
-          category: 'academic',
-          priority: 'low' as AnonymousFeedback['priority'],
-        },
-        {
-          type: 'confession' as AnonymousFeedback['type'],
-          title: 'Late Night Thoughts',
-          content: 'I stay up way too late studying and then regret it the next morning. But I can\'t seem to manage my time better. Anyone else struggle with this?',
-          category: 'academic',
-          priority: 'low' as AnonymousFeedback['priority'],
-        },
-        {
-          type: 'confession' as AnonymousFeedback['type'],
-          title: 'Grateful for Friends',
-          content: 'I\'m so grateful for the friends I\'ve made here. They\'ve been so supportive during tough times. This campus community is amazing.',
+          title: 'Accidental Late‑Night Text',
+          content:
+            "I accidentally sent my crush a paragraph confessing my feelings that was meant for my best friend, then put my phone on airplane mode and pretended I was asleep.",
           category: 'general',
           priority: 'low' as AnonymousFeedback['priority'],
         },
         {
           type: 'confession' as AnonymousFeedback['type'],
-          title: 'First Love',
-          content: 'I think I\'m falling for someone in my class but I\'m too shy to say anything. Maybe one day I\'ll have the courage.',
+          title: 'Secret Supporter',
+          content:
+            "I've been leaving anonymous sticky‑note compliments and snacks for a stressed‑looking classmate. I don't know if they know it's me.",
+          category: 'general',
+          priority: 'low' as AnonymousFeedback['priority'],
+        },
+        {
+          type: 'confession' as AnonymousFeedback['type'],
+          title: 'Campus Coffee Crush',
+          content:
+            "I always time my coffee run to match my crush's usual order time. The barista knows my drink, but not that I'm only there to see one person.",
+          category: 'general',
+          priority: 'low' as AnonymousFeedback['priority'],
+        },
+        {
+          type: 'confession' as AnonymousFeedback['type'],
+          title: 'Notes in the Margins',
+          content:
+            "I borrowed a friend's notebook and found a little heart next to my name in the margin. I've been overthinking it ever since.",
+          category: 'academic',
+          priority: 'low' as AnonymousFeedback['priority'],
+        },
+        {
+          type: 'confession' as AnonymousFeedback['type'],
+          title: 'Library Window Seat',
+          content:
+            "There's someone who always takes the same window seat in the library. I schedule my study time just to sit across from them and share silent playlists.",
+          category: 'general',
+          priority: 'low' as AnonymousFeedback['priority'],
+        },
+        {
+          type: 'confession' as AnonymousFeedback['type'],
+          title: 'Crush in My DMs',
+          content:
+            "My crush replied “this made my day” to a meme I sent and I've been smiling about it for a week straight.",
           category: 'general',
           priority: 'low' as AnonymousFeedback['priority'],
         },
@@ -325,7 +476,7 @@ const ConfessionsPage: React.FC = () => {
             loading={addDummyConfessionsMutation.isPending}
           >
             <SparklesIcon className="h-4 w-4 mr-2" />
-            Add Demo Data
+            Add Sample Data
           </Button>
           <Button onClick={() => setIsCreateModalOpen(true)}>
             <PlusIcon className="h-5 w-5 mr-2" />
@@ -381,14 +532,14 @@ const ConfessionsPage: React.FC = () => {
         <div className="text-center py-12">
           <p className="text-gray-500">Loading confessions...</p>
         </div>
-      ) : allConfessions.length === 0 ? (
+      ) : filteredConfessions.length === 0 ? (
         <Card>
           <CardContent className="text-center py-12">
             <HeartIcon className="h-16 w-16 text-gray-300 mx-auto mb-4" />
             <p className="text-gray-500 text-lg">No confessions yet</p>
             <p className="text-gray-400 mt-2">
               {searchQuery || categoryFilter
-                ? 'Try adjusting your filters'
+                ? 'No confessions match your filters. Try adjusting them.'
                 : 'Be the first to share your thoughts anonymously!'}
             </p>
           </CardContent>
@@ -422,18 +573,38 @@ const ConfessionsPage: React.FC = () => {
                   <div className="flex items-center gap-4">
                     <button
                       onClick={() => handleVote(confession.id, 'up')}
-                      className="flex items-center gap-2 text-gray-600 hover:text-green-600 transition-colors"
+                      className={`flex items-center gap-2 transition-colors ${
+                        getUserVoteForConfession(confession.id) === 'up'
+                          ? 'text-green-600'
+                          : 'text-gray-600 hover:text-green-600'
+                      }`}
                       disabled={voteMutation.isPending}
                     >
-                      <HandThumbUpIcon className="h-5 w-5" />
+                      <HandThumbUpIcon
+                        className={`h-5 w-5 ${
+                          getUserVoteForConfession(confession.id) === 'up'
+                            ? 'fill-green-600 text-green-600'
+                            : ''
+                        }`}
+                      />
                       <span>{confession.upvotes}</span>
                     </button>
                     <button
                       onClick={() => handleVote(confession.id, 'down')}
-                      className="flex items-center gap-2 text-gray-600 hover:text-red-600 transition-colors"
+                      className={`flex items-center gap-2 transition-colors ${
+                        getUserVoteForConfession(confession.id) === 'down'
+                          ? 'text-red-600'
+                          : 'text-gray-600 hover:text-red-600'
+                      }`}
                       disabled={voteMutation.isPending}
                     >
-                      <HandThumbDownIcon className="h-5 w-5" />
+                      <HandThumbDownIcon
+                        className={`h-5 w-5 ${
+                          getUserVoteForConfession(confession.id) === 'down'
+                            ? 'fill-red-600 text-red-600'
+                            : ''
+                        }`}
+                      />
                       <span>{confession.downvotes}</span>
                     </button>
                   </div>
